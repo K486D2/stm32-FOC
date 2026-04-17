@@ -91,12 +91,12 @@ void flash_default_config(motor_config_t *data) {
 void copy_to_local(motor_config_t *data, foc_t *hfoc) {
     hfoc->id_ctrl.kp = data->id_kp;
     hfoc->id_ctrl.ki = data->id_ki;
-    hfoc->id_ctrl.out_max_dynamic = data->id_out_max;
+    hfoc->id_ctrl.out_max = data->id_out_max;
     hfoc->id_ctrl.e_deadband = data->id_e_deadband;
     
     hfoc->iq_ctrl.kp = data->iq_kp;
     hfoc->iq_ctrl.ki = data->iq_ki;
-    hfoc->iq_ctrl.out_max_dynamic = data->iq_out_max;
+    hfoc->iq_ctrl.out_max = data->iq_out_max;
     hfoc->iq_ctrl.e_deadband = data->iq_e_deadband;
 
     hfoc->I_ctrl_bandwidth = data->I_ctrl_bandwidth;
@@ -117,6 +117,7 @@ void copy_to_local(motor_config_t *data, foc_t *hfoc) {
 
     hfoc->sensor_dir = data->dir;
     hfoc->gear_ratio = data->gear_ratio;
+    hfoc->m_angle_offset = data->encd_offset;
 
     hfoc->Rs = data->Rs;
     hfoc->Ld = data->Ld;
@@ -126,12 +127,12 @@ void copy_to_local(motor_config_t *data, foc_t *hfoc) {
 void copy_from_local(motor_config_t *data, foc_t *hfoc) {
     data->id_kp = hfoc->id_ctrl.kp;
     data->id_ki = hfoc->id_ctrl.ki;
-    data->id_out_max = hfoc->id_ctrl.out_max_dynamic;
+    data->id_out_max = hfoc->id_ctrl.out_max;
     data->id_e_deadband = hfoc->id_ctrl.e_deadband;
 
     data->iq_kp = hfoc->iq_ctrl.kp;
     data->iq_ki = hfoc->iq_ctrl.ki;
-    data->iq_out_max = hfoc->iq_ctrl.out_max_dynamic;
+    data->iq_out_max = hfoc->iq_ctrl.out_max;
     data->iq_e_deadband = hfoc->iq_ctrl.e_deadband;
 
     data->I_ctrl_bandwidth = hfoc->I_ctrl_bandwidth;
@@ -149,6 +150,7 @@ void copy_from_local(motor_config_t *data, foc_t *hfoc) {
 
     data->dir = hfoc->sensor_dir;
     data->gear_ratio = hfoc->gear_ratio;
+    data->encd_offset = hfoc->m_angle_offset;
 
     data->Rs = hfoc->Rs;
     data->Ld = hfoc->Ld;

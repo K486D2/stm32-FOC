@@ -80,6 +80,11 @@ Built using **PlatformIO**, **STM32 HAL/LL drivers**, and **FreeRTOS**, this pro
 
 ## UPDATE LOG
 
+18-04-2026
+- Add MTPA and Field Weakening
+- Change PID constraint and anti windup algorithm
+- Change voltage and current limiter algorithm in FOC
+
 08-02-2026
 - Change CLI format
 - Integrate sensorless and sensored in one function and struct

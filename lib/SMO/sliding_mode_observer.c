@@ -102,13 +102,17 @@ int smo_update_arctan(smo_t *hsmo, float v_alpha, float v_beta,
         if (delta_theta > PI) delta_theta -= TWO_PI;
         if (delta_theta < -PI) delta_theta += TWO_PI;
         
-        float delta_theta_mech = delta_theta / hsmo->pole_pairs;
-        float omega_instant = delta_theta_mech / hsmo->Ts;
+        // float delta_theta_mech = delta_theta / hsmo->pole_pairs;
+        // float omega_instant = delta_theta_mech / hsmo->Ts;
         
+        // hsmo->omega_est = hsmo->omega_est * (1.0f - hsmo->omega_alpha_filter) + 
+        //                  omega_instant * hsmo->omega_alpha_filter;
+
+        // hsmo->rpm_est = hsmo->omega_est * 60.0 / TWO_PI;
+
+        float omega_instant = delta_theta / hsmo->Ts;
         hsmo->omega_est = hsmo->omega_est * (1.0f - hsmo->omega_alpha_filter) + 
                          omega_instant * hsmo->omega_alpha_filter;
-
-        hsmo->rpm_est = hsmo->omega_est * 60.0 / TWO_PI;
         
         hsmo->last_e_theta = hsmo->e_theta;
         return 1;
@@ -126,4 +130,8 @@ float smo_get_rotor_angle(smo_t *hsmo) {
 
 float smo_get_rotor_speed(smo_t *hsmo) {
     return hsmo->rpm_est;
+}
+
+float smo_get_omega(smo_t *hsmo) {
+    return hsmo->omega_est;
 }

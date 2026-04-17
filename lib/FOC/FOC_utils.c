@@ -65,6 +65,29 @@ void foc_set_mode(foc_t *hfoc, foc_mode_t mode) {
 
 void foc_disable(foc_t *hfoc) {
     DRV8302_disable_gate(&hfoc->drv8302);
+    DRV8302_stop_pwm(&hfoc->drv8302);
+    pid_reset(&hfoc->id_ctrl);
+    pid_reset(&hfoc->iq_ctrl);
+    pid_reset(&hfoc->speed_ctrl);
+    pid_reset(&hfoc->pos_ctrl);
+    if (hfoc->foc_mode != FOC_MODE_SENSORED) {
+        if (hfoc->foc_mode == FOC_MODE_SENSORLESS_SMO_HFI_NEW) {
+            hfi_reset(&hfoc->hfi);
+        }
+        else if (hfoc->foc_mode == FOC_MODE_SENSORLESS_SMO_HFI) {
+            hfi_lpf_reset(&hfoc->hfi_lpf);
+        }
+
+        hfoc->pd_time = 20;
+        hfoc->pd_v_pulse = 0.0f;
+        hfoc->pd_state = P_DET_START;
+    }
+    hfoc->control_mode = POWER_UP_MODE;
+}
+
+void foc_enable(foc_t *hfoc) {
+    DRV8302_enable_gate(&hfoc->drv8302);
+    DRV8302_start_pwm(&hfoc->drv8302);
 }
 
 void foc_speed_control_update(foc_t *hfoc, float rpm_reference) {
@@ -74,8 +97,7 @@ void foc_speed_control_update(foc_t *hfoc, float rpm_reference) {
 		return;
 	}
 
-    hfoc->id_ref = 0.0f;
-    hfoc->iq_ref = pid_control(&hfoc->speed_ctrl, rpm_reference - hfoc->actual_rpm);
+    hfoc->Is_ref = pi_control(&hfoc->speed_ctrl, rpm_reference - hfoc->actual_rpm);
 }
 
 void foc_position_control_update(foc_t *hfoc, float deg_reference) {
@@ -221,11 +243,16 @@ void foc_cal_encoder(foc_t *hfoc) {
 
     error_temp[index] = raw_delta;
     
+    if (AS5047P_get_val_flag()) {
+        AS5047P_reset_val_flag();
+        AS5047P_start(&hfoc->as5047p);
+    }
+    
     // debug
-    // float buffer_val[2];
-    // buffer_val[0] = raw_delta;
-    // buffer_val[1] = delta;
-    // send_data_float(buffer_val, 2);
+    float buffer_val[2];
+    buffer_val[0] = raw_delta;
+    buffer_val[1] = delta;
+    send_data_float(buffer_val, 2);
   }
   
   for (int i = 0; i < ERROR_LUT_SIZE; i++) {
@@ -390,8 +417,8 @@ void estimate_inductance(foc_t *hfoc, float ts) {
     hfoc->Lq = fabs(Lq_est);
 }
 
-// Fungsi inisialisasi HFI system
 void foc_sensorless_init(foc_t *hfoc, float sampling_freq) {
+
     float Rs = hfoc->Rs;
     float Ls = (hfoc->Ld + hfoc->Lq) / 2.0f;
     smo_init(&hfoc->smo, Rs, Ls, hfoc->pole_pairs, 1.0f / sampling_freq);
@@ -399,14 +426,23 @@ void foc_sensorless_init(foc_t *hfoc, float sampling_freq) {
     second_order_lpf_init(&hfoc->id_lpf, HFI_ID_LPF_FC, sampling_freq);
     second_order_lpf_init(&hfoc->iq_lpf, HFI_IQ_LPF_FC, sampling_freq);
 
-#if HFI_NEW
-    hfi_init(&hfoc->hfi, HFI_AMP, HFI_FREQ, sampling_freq);
-#else
-    hfi_lpf_init(&hfoc->hfi_lpf, hfoc->Ld, HFI_AMP, HFI_FREQ, HFI_I_ALPHA_BETA_LPF_FC, sampling_freq);
-#endif
+    if (hfoc->foc_mode == FOC_MODE_HYBRID) {
+        hfoc->state = MOTOR_STATE_SENSORED;
+        return;
+    }
+    else if (hfoc->foc_mode == FOC_MODE_SENSORED) return;
+
+    if (hfoc->foc_mode == FOC_MODE_SENSORLESS_SMO_HFI_NEW) {
+        hfi_init(&hfoc->hfi, HFI_AMP, HFI_FREQ, sampling_freq);
+    }
+    else if (hfoc->foc_mode == FOC_MODE_SENSORLESS_SMO_HFI) {
+        hfi_lpf_init(&hfoc->hfi_lpf, hfoc->Ld, HFI_AMP, HFI_FREQ, HFI_I_ALPHA_BETA_LPF_FC, sampling_freq);
+    }
 
     hfoc->pd_time = 20;
     hfoc->pd_v_pulse = 0.0f;
+    hfoc->pd_state = P_DET_START;
+    hfoc->state = MOTOR_STATE_HFI;
 }
 
 void foc_sensorless_polarity_detection(foc_t *hfoc) {
@@ -461,6 +497,50 @@ void foc_sensorless_polarity_detection(foc_t *hfoc) {
     }
 }
 
+void foc_MTPA(foc_t *hfoc, float Is, float *Id_ref, float *Iq_ref) {
+    float L_diff = hfoc->Lq - hfoc->Ld;
+    if (L_diff < 0) {
+        *Id_ref = 0.0f;
+        *Iq_ref = Is;
+        return;
+    }
+    float Is_square = Is * Is;
+    float temp = sqrtf(hfoc->flux_linkage * hfoc->flux_linkage + 8.0f * (L_diff * L_diff) * Is_square);
+    float id = (hfoc->flux_linkage - temp) / (4.0f * L_diff);
+    float iq = sqrtf(Is_square - id * id);
+    if (Is < 0) iq = -iq;
+
+    *Id_ref = id;
+    *Iq_ref = iq;
+}
+
+void foc_fw_set_vs_ref(foc_t *hfoc, float vs_ref) {
+    hfoc->fw_vs_ref = vs_ref;
+}
+
+float foc_fw_update(foc_t *hfoc) {
+    float vs = sqrtf(hfoc->vd * hfoc->vd + hfoc->vq * hfoc->vq);
+    float error = hfoc->fw_vs_ref - vs;
+    float mv = pi_control(&hfoc->fw_ctrl, error);
+    return mv;
+}
+
+void foc_current_limit(float *id_ref, float *iq_ref, float max_current) {
+    if (*id_ref > max_current) {
+        *id_ref = max_current;
+    }
+    else if (*id_ref < -max_current) {
+        *id_ref = -max_current;
+    }
+    float max_iq = sqrtf(max_current * max_current - *id_ref * *id_ref);
+    if (*iq_ref > max_iq) {
+        *iq_ref = max_iq;
+    }
+    else if (*iq_ref < -max_iq) {
+        *iq_ref = -max_iq;
+    }
+}
+
 void foc_current_control_update(foc_t *hfoc, float Ts) {
 	if (hfoc == NULL || Ts <= 0.0f || hfoc->control_mode == AUDIO_MODE) {
 		hfoc->id_ctrl.integral = 0.0f;
@@ -470,9 +550,11 @@ void foc_current_control_update(foc_t *hfoc, float Ts) {
 		return;
 	}
 
-	float id_ref = hfoc->id_ref;
-	float iq_ref = hfoc->iq_ref;
     const float v_bus = hfoc->v_bus;
+    const float vs_max = v_bus * ONE_BY_SQRT3;
+
+	float id_ref = 0.0f;
+	float iq_ref = 0.0f;
 
     float ia, ib;
     float sin_theta, cos_theta;
@@ -486,12 +568,15 @@ void foc_current_control_update(foc_t *hfoc, float Ts) {
     uint32_t pwm_res = hfoc->drv8302.pwm_resolution;
     const float pwm_to_v = v_bus / (float)pwm_res;
 
-    // get currents
-    DRV8302_get_current(&hfoc->drv8302, &ia, &ib);
+    foc_MTPA(hfoc, hfoc->Is_ref, &id_ref, &iq_ref);
+    foc_fw_set_vs_ref(hfoc, 0.97f * vs_max);
+    id_ref += foc_fw_update(hfoc);
 
     // Hard limit references
-    id_ref = CONSTRAIN(id_ref, -hfoc->max_current, hfoc->max_current);
-    iq_ref = CONSTRAIN(iq_ref, -hfoc->max_current, hfoc->max_current);
+    foc_current_limit(&id_ref, &iq_ref, hfoc->max_current);
+
+    // get currents
+    DRV8302_get_current(&hfoc->drv8302, &ia, &ib);
 
     // pre calculate sin & cos
     pre_calc_sin_cos(hfoc->e_rad, &sin_theta, &cos_theta);
@@ -499,38 +584,37 @@ void foc_current_control_update(foc_t *hfoc, float Ts) {
     clarke_transform(ia, ib, &i_alpha, &i_beta);
     park_transform(i_alpha, i_beta, sin_theta, cos_theta, &id, &iq);
     
+    // LPF id & iq
+    hfoc->id_filtered = second_order_lpf_update(&hfoc->id_lpf, id);
+    hfoc->iq_filtered = second_order_lpf_update(&hfoc->iq_lpf, iq);
+
     if (hfoc->foc_mode == FOC_MODE_SENSORLESS_SMO_HFI ||
         hfoc->foc_mode == FOC_MODE_SENSORLESS_SMO_HFI_NEW) {
-        // LPF id & iq
-        hfoc->id_filtered = second_order_lpf_update(&hfoc->id_lpf, id);
-        hfoc->iq_filtered = second_order_lpf_update(&hfoc->iq_lpf, iq);
-
         foc_sensorless_polarity_detection(hfoc);
-
-        _Bool smo_ret = smo_update_arctan(&hfoc->smo, hfoc->v_alpha, hfoc->v_beta, i_alpha, i_beta);
-
         if (hfoc->foc_mode == FOC_MODE_SENSORLESS_SMO_HFI_NEW) {
             hfi_update_estimate_position(&hfoc->hfi, iq, Ts);
         }
         else {
             hfi_lpf_update_estimate_position(&hfoc->hfi_lpf, i_alpha, i_beta, Ts);
         }
+
+        _Bool smo_ret = smo_update_arctan(&hfoc->smo, hfoc->v_alpha, hfoc->v_beta, i_alpha, i_beta);
+
         switch (hfoc->state) {
             case MOTOR_STATE_HFI: {
                 id_error = id_ref - hfoc->id_filtered;
                 iq_error = iq_ref - hfoc->iq_filtered;
 
                 float v_inj = 0.0f;
-                float omega = 0.0f;
                 if (hfoc->foc_mode == FOC_MODE_SENSORLESS_SMO_HFI_NEW) {
                     v_inj = hfi_get_v_inj(&hfoc->hfi);
                     hfoc->e_rad = hfi_get_estimate_position(&hfoc->hfi);
-                    omega = hfi_get_estimate_omega(&hfoc->hfi);
+                    hfoc->e_omega = hfi_get_estimate_omega(&hfoc->hfi);
                 }
                 else {
                     v_inj = hfi_lpf_get_v_inj(&hfoc->hfi_lpf);
                     hfoc->e_rad = hfi_lpf_get_estimate_position(&hfoc->hfi_lpf);
-                    omega = hfi_lpf_get_estimate_omega(&hfoc->hfi_lpf);
+                    hfoc->e_omega = hfi_lpf_get_estimate_omega(&hfoc->hfi_lpf);
                 }
 
                 if (hfoc->pd_state > P_DET_START && hfoc->pd_state < P_DET_STOP)
@@ -538,7 +622,7 @@ void foc_current_control_update(foc_t *hfoc, float Ts) {
                 else {
                     vd_ref = v_inj;
 
-                    hfoc->actual_rpm = (omega * 60.0 / TWO_PI) / hfoc->pole_pairs;
+                    hfoc->actual_rpm = (hfoc->e_omega * 60.0f / TWO_PI) / hfoc->pole_pairs;
                     if (fabsf(hfoc->actual_rpm) > HFI_TO_SMO_THRESHOLD) {
                         hfoc->state = MOTOR_STATE_SMO;
                     }
@@ -554,7 +638,8 @@ void foc_current_control_update(foc_t *hfoc, float Ts) {
                     break;
                 }
                 hfoc->e_rad = smo_get_rotor_angle(&hfoc->smo);
-                hfoc->actual_rpm = smo_get_rotor_speed(&hfoc->smo);
+                hfoc->e_omega = smo_get_omega(&hfoc->smo);
+                hfoc->actual_rpm = (hfoc->e_omega * 60.0f / TWO_PI) / hfoc->pole_pairs;
                 if (hfoc->foc_mode == FOC_MODE_SENSORLESS_SMO_HFI_NEW) {
                     hfi_force_estimate_position(&hfoc->hfi, hfoc->e_rad);
                 }
@@ -571,7 +656,7 @@ void foc_current_control_update(foc_t *hfoc, float Ts) {
             int n = hfoc->sample_index;
             param1_debug_buff[n] = hfoc->hfi.sdft_fundamental;
             param2_debug_buff[n] = hfoc->hfi.sdft_amplitude;
-            // param3_debug_buff[n] = hfoc->hfi.sdft_fundamental;
+            param3_debug_buff[n] = hfoc->e_angle_rad_comp;
             // param4_debug_buff[n] = hfoc->pd_v_pulse;
             hfoc->sample_index++;
             if (hfoc->sample_index > MAX_SAMPLE_BUFF) {
@@ -581,6 +666,41 @@ void foc_current_control_update(foc_t *hfoc, float Ts) {
         }
 #endif
     }
+    else if (hfoc->foc_mode == FOC_MODE_HYBRID) {
+        id_error = id_ref - id;
+        iq_error = iq_ref - iq;
+        _Bool smo_ret = smo_update_arctan(&hfoc->smo, hfoc->v_alpha, hfoc->v_beta, i_alpha, i_beta);
+        float rpm_encoder = AS5047P_get_rpm(&hfoc->as5047p, Ts);
+        if (AS5047P_get_val_flag()) {
+            AS5047P_reset_val_flag();
+            AS5047P_start(&hfoc->as5047p);
+        }
+        switch (hfoc->state) {
+            case MOTOR_STATE_SENSORED: {
+                hfoc->e_rad = hfoc->e_angle_rad_comp;
+                hfoc->actual_rpm = rpm_encoder;
+                if (hfoc->sensor_dir == REVERSE_DIR) {
+                    hfoc->actual_rpm = -hfoc->actual_rpm;
+                }
+                if (fabsf(hfoc->actual_rpm) > 500.0f) {
+                    hfoc->state = MOTOR_STATE_SMO;
+                }
+                break;
+            }
+            case MOTOR_STATE_SMO: {
+                if (!smo_ret) {
+                    hfoc->state = MOTOR_STATE_SENSORED;
+                    break;
+                }
+                hfoc->e_rad = smo_get_rotor_angle(&hfoc->smo);
+                hfoc->e_omega = smo_get_omega(&hfoc->smo);
+                hfoc->actual_rpm = (hfoc->e_omega * 60.0f / TWO_PI) / hfoc->pole_pairs;
+                break;
+            }
+            default:
+                break;
+        }
+    }
     else if (hfoc->foc_mode == FOC_MODE_SENSORED) {
         id_error = id_ref - id;
         iq_error = iq_ref - iq;
@@ -589,18 +709,19 @@ void foc_current_control_update(foc_t *hfoc, float Ts) {
         if (hfoc->sensor_dir == REVERSE_DIR) {
             hfoc->actual_rpm = -hfoc->actual_rpm;
         }
-        
+
         if (AS5047P_get_val_flag()) {
             AS5047P_reset_val_flag();
             AS5047P_start(&hfoc->as5047p);
         }
     }
 
-    // set dynamic max output vd and vq
-    hfoc->id_ctrl.out_max = hfoc->id_ctrl.out_max_dynamic * v_bus;
-    hfoc->iq_ctrl.out_max = hfoc->iq_ctrl.out_max_dynamic * v_bus;
-
+    // voltage limit
+    pid_set_out_constraint(&hfoc->id_ctrl, vs_max, -vs_max);
     vd_ref += pi_control(&hfoc->id_ctrl, id_error);
+
+    float vq_max = sqrtf(vs_max * vs_max - vd_ref * vd_ref);
+    pid_set_out_constraint(&hfoc->iq_ctrl, vq_max, -vq_max);
     vq_ref = pi_control(&hfoc->iq_ctrl, iq_error);
 
     inverse_park_transform(vd_ref, vq_ref, sin_theta, cos_theta, &hfoc->v_alpha, &hfoc->v_beta);
@@ -640,12 +761,12 @@ float foc_get_mech_degree(foc_t *hfoc) {
         hfoc->last_e_rad = hfoc->e_rad;
     }
 
-    float mechanical_angle_deg = RAD_TO_DEG(total_e_angle) / hfoc->pole_pairs;
+    float mechanical_angle_deg = RAD_TO_DEG(total_e_angle) / (float)hfoc->pole_pairs * hfoc->gear_ratio;
 
     // Normalize to 0-360 degrees
     mechanical_angle_deg = fmodf(mechanical_angle_deg, 360.0f);
     if (mechanical_angle_deg < 0) {
-    mechanical_angle_deg += 360.0f;
+        mechanical_angle_deg += 360.0f;
     }
 
     hfoc->actual_angle = mechanical_angle_deg;

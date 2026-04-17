@@ -170,19 +170,6 @@ static void get_pid_max_parameter(PID_Controller_t *pid, const char *title) {
             title, pid->out_max);
 }
 
-
-static void get_foc_pid_all_parameter(PID_Controller_t *pid, const char *title) {
-  usb_print("%s control param:\r\n"
-            " kp:%f\r\n ki:%f\r\n kd:%f\r\n deadband:%f\r\n max out:%f\r\n",
-            title, pid->kp, pid->ki, pid->kd, pid->e_deadband, pid->out_max_dynamic);
-}
-
-static void get_foc_pid_max_parameter(PID_Controller_t *pid, const char *title) {
-  usb_print("%s control param:\r\n"
-            " max out:%f\r\n",
-            title, pid->out_max_dynamic);
-}
-
 /******************************************************************************************* */
 
 static void print_mode(motor_mode_t mode) {
@@ -259,11 +246,11 @@ static void add_plot_point(const char *cmd) {
     snprintf(point_name, sizeof(point_name), "i_beta");
   }
   else if (strstr(cmd, "id")) {
-    point = &hfoc.id;
+    point = &hfoc.id_filtered;
     snprintf(point_name, sizeof(point_name), "id");
   }
   else if (strstr(cmd, "iq")) {
-    point = &hfoc.iq;
+    point = &hfoc.iq_filtered;
     snprintf(point_name, sizeof(point_name), "iq");
   }
   // voltage
@@ -353,10 +340,10 @@ static void remove_plot_point(const char *cmd) {
     point = &hfoc.i_beta;
   }
   else if (strstr(cmd, "id")) {
-    point = &hfoc.id;
+    point = &hfoc.id_filtered;
   }
   else if (strstr(cmd, "iq")) {
-    point = &hfoc.iq;
+    point = &hfoc.iq_filtered;
   }
   // voltage
   else if (strstr(cmd, "va")) {
@@ -451,6 +438,10 @@ void parse_command(char *cmd) {
       pid = &hfoc.iq_ctrl;
       foc = 1;
     }
+    else if (strstr(argv[1], "fw")) {
+      pid = &hfoc.fw_ctrl;
+      foc = 1;
+    }
     else if (strstr(argv[1], "speed")) {
       pid = &hfoc.speed_ctrl;
     }
@@ -461,12 +452,7 @@ void parse_command(char *cmd) {
     if (pid == NULL) return;
 
     if (argc == 2) {
-      if (foc) {
-        get_foc_pid_all_parameter(pid, argv[1]);
-      }
-      else {
-        get_pid_all_parameter(pid, argv[1]);
-      }
+      get_pid_all_parameter(pid, argv[1]);
     }
     else if (argc >= 3) {
       float val = 0.0f;
@@ -530,21 +516,12 @@ void parse_command(char *cmd) {
       else if (strstr(argv[2], "max")) {
 		    if (argc == 4) {
           val = atof(argv[3]);
-          if (foc) {
-            pid->out_max_dynamic = val;
-          }
-          else {
-            pid->out_max = val;
-          }
+          pid->out_max = val;
+          pid->out_min = -val;
           need_to_save = 1;
         }
         else {
-          if (foc) {
-            get_foc_pid_max_parameter(pid, argv[1]);
-          }
-          else {
-            get_pid_max_parameter(pid, argv[1]);
-          }
+          get_pid_max_parameter(pid, argv[1]);
         }
       }
     }
@@ -570,6 +547,14 @@ void parse_command(char *cmd) {
     if (argc == 2) {
       sp_input = atof(argv[1]);
     }
+    else if (argc == 3) {
+	    if (strstr(argv[1], "id")) {
+        hfoc.id_ref = atof(argv[2]);
+      }
+	    else if (strstr(argv[1], "fw")) {
+        hfoc.fw_vs_ref = atof(argv[2]);
+      }
+    }
 	}
   else if (strstr(argv[0], "ratio") != NULL) {
     if (argc == 2) {
@@ -590,6 +575,22 @@ void parse_command(char *cmd) {
   }
   else if (strstr(argv[0], "motor_param") != NULL) {
     print_motor_param();
+  }
+  else if (strstr(argv[0], "motor") != NULL) {
+    if (argc == 2) {
+      if (strstr(argv[1], "off") != NULL) {
+        foc_disable(&hfoc);
+        hfoc.control_mode = POWER_UP_MODE;
+        usb_print("disable motor\r\n");
+      }
+      else if (strstr(argv[1], "on") != NULL) {
+        foc_enable(&hfoc);
+        foc_delay_ms(10);
+        sp_input = 0.0f;
+        hfoc.control_mode = TORQUE_CONTROL_MODE;
+        usb_print("enable motor\r\n");
+      }
+    }
   }
 
   if (need_to_save) {

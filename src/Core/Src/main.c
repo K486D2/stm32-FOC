@@ -139,14 +139,14 @@ static void control_init(void) {
   pid_set_ts(&hfoc.id_ctrl, FOC_TS);
   pid_set_kp(&hfoc.id_ctrl, m_config.id_kp);
   pid_set_ki(&hfoc.id_ctrl, m_config.id_ki);
-  pid_set_max_out_dynamic(&hfoc.id_ctrl, m_config.id_out_max);
+  pid_set_out_constraint(&hfoc.id_ctrl, m_config.id_out_max, -m_config.id_out_max);
   pid_set_deadband(&hfoc.id_ctrl, m_config.id_e_deadband);
   // Id PI parameter
   pid_reset(&hfoc.iq_ctrl);
   pid_set_ts(&hfoc.iq_ctrl, FOC_TS);
   pid_set_kp(&hfoc.iq_ctrl, m_config.iq_kp);
   pid_set_ki(&hfoc.iq_ctrl, m_config.iq_ki);
-  pid_set_max_out_dynamic(&hfoc.iq_ctrl, m_config.iq_out_max);
+  pid_set_out_constraint(&hfoc.iq_ctrl, m_config.iq_out_max, -m_config.iq_out_max);
   pid_set_deadband(&hfoc.iq_ctrl, m_config.iq_e_deadband);
   // Speed PID parameter
   pid_reset(&hfoc.speed_ctrl);
@@ -156,7 +156,7 @@ static void control_init(void) {
   pid_set_kd(&hfoc.speed_ctrl, 0.0001f);
   pid_set_d_filter_fc(&hfoc.speed_ctrl, 100.0f);
   pid_set_max_d(&hfoc.speed_ctrl, 10.0f);
-  pid_set_max_out(&hfoc.speed_ctrl, m_config.speed_out_max);
+  pid_set_out_constraint(&hfoc.speed_ctrl, m_config.speed_out_max, -m_config.speed_out_max);
   pid_set_deadband(&hfoc.speed_ctrl, m_config.speed_e_deadband);
   // Position PID parameter
   pid_reset(&hfoc.pos_ctrl);
@@ -166,19 +166,16 @@ static void control_init(void) {
   pid_set_kd(&hfoc.pos_ctrl, m_config.pos_kd);
   pid_set_d_filter_fc(&hfoc.pos_ctrl, 20.0f);
   pid_set_max_d(&hfoc.pos_ctrl, 100.0f);
-  pid_set_max_out(&hfoc.pos_ctrl, m_config.pos_out_max);
+  pid_set_out_constraint(&hfoc.pos_ctrl, m_config.pos_out_max, -m_config.pos_out_max);
   pid_set_deadband(&hfoc.pos_ctrl, m_config.pos_e_deadband);
+  // field weakening
+  pid_reset(&hfoc.fw_ctrl);
+  pid_set_ts(&hfoc.fw_ctrl, FOC_TS);
+  pid_set_kp(&hfoc.fw_ctrl, 1.0f);
+  pid_set_ki(&hfoc.fw_ctrl, 5.0f);
+  pid_set_out_constraint(&hfoc.fw_ctrl, 0.0f, -3.0f);
+  pid_set_deadband(&hfoc.fw_ctrl, 0.0f);
 
-  // hfoc.id_ctrl.out_max_dynamic = m_config.id_out_max;
-  // hfoc.iq_ctrl.out_max_dynamic = m_config.iq_out_max;
-  // pid_init(&hfoc.id_ctrl, m_config.id_kp, m_config.id_ki, 0.0f, FOC_TS, 10.0f, m_config.id_e_deadband);
-  // pid_init(&hfoc.iq_ctrl, m_config.iq_kp, m_config.iq_ki, 0.0f, FOC_TS, 10.0f, m_config.iq_e_deadband);
-
-  // pid_init(&hfoc.speed_ctrl, m_config.speed_kp, m_config.speed_ki, 0.0001f, FOC_TS * SPEED_CONTROL_CYCLE, m_config.speed_out_max, m_config.speed_e_deadband);
-  // hfoc.speed_ctrl.d_alpha_filter = 0.01f;
-  // pid_init(&hfoc.pos_ctrl, m_config.pos_kp, m_config.pos_ki, m_config.pos_kd, FOC_TS * SPEED_CONTROL_CYCLE * 10, m_config.pos_out_max, m_config.pos_e_deadband);
-  // hfoc.pos_ctrl.d_alpha_filter = 0.85f;
-  
   foc_motor_init(&hfoc, POLE_PAIR, 360.0f);
 
   foc_sensor_init(&hfoc, m_config.encd_offset, REVERSE_DIR);
@@ -188,16 +185,16 @@ static void control_init(void) {
   hfoc.Rs = m_config.Rs;
   hfoc.Ld = m_config.Ld;
   hfoc.Lq = m_config.Lq;
+  hfoc.flux_linkage = 0.003789403407f;
+
+  foc_set_mode(&hfoc, FOC_MODE_HYBRID);
 
   // HFI parameter
   foc_sensorless_init(&hfoc, BLDC_PWM_FREQ);
-
-  foc_set_mode(&hfoc, FOC_MODE_SENSORLESS_SMO_HFI_NEW);
-  // foc_set_mode(&hfoc, FOC_MODE_SENSORED);
 }
 
 void magnetic_encoder_init(void) {
-  if (hfoc.foc_mode != FOC_MODE_SENSORED) return;
+  if (hfoc.foc_mode != FOC_MODE_SENSORED && hfoc.foc_mode != FOC_MODE_HYBRID) return;
 
   AS5047P_config(&hfoc.as5047p, &hspi1, SPI_CS_GPIO_Port, SPI_CS_Pin);
   AS5047P_start(&hfoc.as5047p);
@@ -334,16 +331,14 @@ static int torque_control_update(void) {
 }
 
 static void calibration_seq(void) {
-  if (hfoc.foc_mode == FOC_MODE_SENSORED) {
+  if (hfoc.foc_mode == FOC_MODE_SENSORED || hfoc.foc_mode == FOC_MODE_HYBRID) {
     foc_cal_encoder(&hfoc);
   }
 
   measure_R(1.0f);
   measure_L(1000.0f, 1.2f);
 
-  if (hfoc.foc_mode != FOC_MODE_SENSORED) {
-    smo_update_R_L(&hfoc.smo, m_config.Rs, (m_config.Ld + m_config.Lq) * 0.5);
-  }
+  smo_update_R_L(&hfoc.smo, m_config.Rs, (m_config.Ld + m_config.Lq) * 0.5);
   
   flash_auto_tuning_torque_control(&m_config);
   hfoc.id_ctrl.kp = m_config.id_kp;
@@ -357,23 +352,25 @@ static void foc_loop(void) {
   
   switch(hfoc.control_mode) {
     case TORQUE_CONTROL_MODE: {
-      hfoc.id_ref = 0.0f;
-      hfoc.iq_ref = sp_input;
+      // hfoc.id_ref = 0.0f;
+      hfoc.Is_ref = sp_input;
       torque_control_update();
       break;
     }
     case SPEED_CONTROL_MODE: {
       if (torque_control_update() == 1) {
         static float sp_rpm = 0.0f;
-        const float acc_rpm = 1.0f;
+        const float acc_rpm = 5.0f;
 
         if (sp_input > sp_rpm) {
           sp_rpm += acc_rpm;
+          if (sp_rpm > sp_input) sp_rpm = sp_input;
         }
         else if (sp_input < sp_rpm) {
           sp_rpm -= acc_rpm;
+          if (sp_rpm < sp_input) sp_rpm = sp_input;
         }
-        foc_speed_control_update(&hfoc, sp_input);
+        foc_speed_control_update(&hfoc, sp_rpm);
       }
       break;
     }
@@ -454,8 +451,8 @@ int main(void)
 
   flash_read_config(&m_config);
   init_trig_lut();
-  bldc_init();
   control_init();
+  bldc_init();
   CAN_init(&hcan1);
   magnetic_encoder_init();
 	// current sensor
@@ -465,7 +462,7 @@ int main(void)
 	HAL_ADCEx_InjectedStart_IT(&hadc3);
 
   HAL_TIM_Base_Start(&htim10);
-
+#if 1
   // anti-shock at startup
   hfoc.control_mode = POWER_UP_MODE;
 
@@ -478,7 +475,9 @@ int main(void)
   HAL_Delay(500);
   // default mode
   hfoc.control_mode = TORQUE_CONTROL_MODE;
-
+#else
+  foc_disable(&hfoc);
+#endif
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -1214,11 +1213,13 @@ void StartComTask(void const * argument)
       switch (hfoc.control_mode) {
       case TORQUE_CONTROL_MODE:
         snprintf(title, sizeof(title), "CURRENT CONTROL MODE");
-        source_plot[point].addr = &sp_input;
-        snprintf(source_plot[point++].name, MAX_NAME_POINT, "iq_sp");
-        source_plot[point].addr = &hfoc.id;
+        source_plot[point].addr = &hfoc.iq_ref;
+        snprintf(source_plot[point++].name, MAX_NAME_POINT, "iq_ref");
+        source_plot[point].addr = &hfoc.id_ref;
+        snprintf(source_plot[point++].name, MAX_NAME_POINT, "id_ref");
+        source_plot[point].addr = &hfoc.id_filtered;
         snprintf(source_plot[point++].name, MAX_NAME_POINT, "id");
-        source_plot[point].addr = &hfoc.iq;
+        source_plot[point].addr = &hfoc.iq_filtered;
         snprintf(source_plot[point++].name, MAX_NAME_POINT, "iq");
         break;
       case SPEED_CONTROL_MODE:
@@ -1255,7 +1256,7 @@ void StartComTask(void const * argument)
       }
     }
 
-    if (HAL_GetTick() - debug_tick >= 2) {
+    if (HAL_GetTick() - debug_tick >= 5) {
       debug_tick = HAL_GetTick();
       float data[MAX_DATA_PLOT];
       uint8_t len = 0;

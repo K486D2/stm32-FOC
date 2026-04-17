@@ -9,13 +9,10 @@ void hfi_init(hfi_t *hhfi, float v_h, float f_h, float sampling_freq) {
     hhfi->f_h = f_h;
     pll_init(&hhfi->pll, 2000.0f, 6000.0f, 1.0f, 50000.0f);
     
-    // hhfi->sdft_window_size = sampling_freq / f_h;
-    hhfi->sdft_window_size = 20;
     hhfi->sdft_buff_idx = 0;
-    
+    hhfi->sdft_window_size = sampling_freq / f_h;
     // calculate rotation factor: e^(j2pi/N) for k=1
-    // float theta = TWO_PI / hhfi->sdft_window_size;
-    float theta = TWO_PI * 2.0f / hhfi->sdft_window_size;
+    float theta = TWO_PI / (float)hhfi->sdft_window_size;
     hhfi->sdft_rotation_factor.real = fast_cos(theta);
     hhfi->sdft_rotation_factor.imag = fast_sin(theta);
 
@@ -57,7 +54,7 @@ void hfi_update_estimate_position(hfi_t *hhfi, float iq, float Ts) {
     hhfi->sdft_fundamental = i_gamma1;
     
     // sign detector (eq 18)
-    float sign_product = i_gamma1 * fast_cos(hhfi->phase_h);
+    float sign_product = i_gamma1 * fast_cos(hhfi->last_phase_h);
     hhfi->sdft_phase = sign_product;
     int8_t p;
     if (sign_product >= 0) {

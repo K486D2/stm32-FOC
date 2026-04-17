@@ -69,10 +69,10 @@ typedef enum {
 
 // state machine for HFI
 typedef enum {
-	// MOTOR_STATE_POSITION_DETECTION,
-	// MOTOR_STATE_POLARITY_DETECTION,
 	MOTOR_STATE_HFI,
-	MOTOR_STATE_SMO
+	MOTOR_STATE_SMO,
+	MOTOR_STATE_SMO_TO_HFI,
+	MOTOR_STATE_SENSORED,
 }motor_state_t;
 
 // state machine for polarity detection
@@ -111,6 +111,7 @@ typedef struct {
 	float m_angle_offset;
 	float e_rad;
 	float last_e_rad;
+	float e_omega;
 
 	float vd, vq;
 	float id, iq;
@@ -128,6 +129,7 @@ typedef struct {
 	int32_t m_angle_overflow_count;
 
 	float I_ctrl_bandwidth;
+	float Is_ref;
 	float id_ref, iq_ref;
 	float rpm_ref;
 
@@ -136,6 +138,11 @@ typedef struct {
 	PID_Controller_t id_ctrl, iq_ctrl;
 	PID_Controller_t speed_ctrl;
 	PID_Controller_t pos_ctrl;
+
+	//field weakening
+	PID_Controller_t fw_ctrl;
+	float fw_vs_ref;
+	_Bool fw_enable;
 
 	motor_mode_t control_mode;
 
@@ -170,6 +177,7 @@ void foc_gear_reducer_init(foc_t *hfoc, float ratio);
 void foc_set_limit_current(foc_t *hfoc, float i_limit);
 void foc_set_mode(foc_t *hfoc, foc_mode_t mode);
 void foc_disable(foc_t *hfoc);
+void foc_enable(foc_t *hfoc) ;
 void foc_speed_control_update(foc_t *hfoc, float rpm_reference);
 void foc_position_control_update(foc_t *hfoc, float deg_reference);
 float foc_calc_mech_rpm_encoder(foc_t *hfoc, float encd_rpm);

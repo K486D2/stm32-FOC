@@ -43,5 +43,6 @@ int smo_update_arctan(smo_t *hsmo, float v_alpha, float v_beta,
                       float i_alpha_meas, float i_beta_meas);
 float smo_get_rotor_angle(smo_t *hsmo);
 float smo_get_rotor_speed(smo_t *hsmo);
+float smo_get_omega(smo_t *hsmo);
 
 #endif

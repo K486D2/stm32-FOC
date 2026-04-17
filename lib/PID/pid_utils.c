@@ -25,15 +25,11 @@ float pi_control(PID_Controller_t *pi, float error) {
     // Anti-windup with clamping
     if (output > pi->out_max) {
         output = pi->out_max;
-        if (error * (output - p_term) <= 0) { 
-            pi->integral = new_integral;
-        }
+        pi->integral = output - p_term;
     }
-    else if (output < -pi->out_max) {
-        output = -pi->out_max;
-        if (error * (output - p_term) <= 0) {
-            pi->integral = new_integral;
-        }
+    else if (output < pi->out_min) {
+        output = pi->out_min;
+        pi->integral = output - p_term;
     }
     else {
         pi->integral = new_integral;
@@ -63,8 +59,8 @@ float pd_control(PID_Controller_t *pd, float error) {
     if (output > pd->out_max) {
         output = pd->out_max;
     }
-    else if (output < -pd->out_max) {
-        output = -pd->out_max;
+    else if (output < pd->out_min) {
+        output = pd->out_min;
     }
 
     return output;
@@ -77,21 +73,12 @@ float pid_control(PID_Controller_t *pid, float error) {
 
     float p_term = pid->kp * error;
 
-#if 1
     float error_derivative = (error - pid->last_error) / pid->ts;
     pid->d_filtered = (1.0f - pid->d_alpha_filter) * pid->d_filtered + pid->d_alpha_filter * error_derivative;
     // clamp derivative
     if (pid->d_filtered > pid->d_max) pid->d_filtered = pid->d_max;
     else if (pid->d_filtered < -pid->d_max) pid->d_filtered = -pid->d_max;
     float d_term = pid->d_filtered * pid->kd;
-#else
-    float error_derivative = error - pid->last_error;
-    pid->d_filtered += pid->d_alpha_filter * ((pid->kd * error_derivative / pid->ts) - pid->d_filtered);
-    // clamp derivative
-    if (pid->d_filtered > pid->d_max) pid->d_filtered = pid->d_max;
-    else if (pid->d_filtered < -pid->d_max) pid->d_filtered = -pid->d_max;
-    float d_term = pid->d_filtered;
-#endif
     pid->last_error = error;
 
     float new_integral = pid->integral + error * pid->ki * pid->ts;
@@ -101,15 +88,11 @@ float pid_control(PID_Controller_t *pid, float error) {
     // Anti-windup with clamping
     if (output > pid->out_max) {
         output = pid->out_max;
-        if ((output - (p_term + d_term)) * error <= 0) {
-            pid->integral = new_integral; 
-        }
+        pid->integral = output - (p_term + d_term);
     }
-    else if (output < -pid->out_max) {
-        output = -pid->out_max;
-        if ((output - (p_term + d_term)) * error <= 0) {
-            pid->integral = new_integral;
-        }
+    else if (output < pid->out_min) {
+        output = pid->out_min;
+        pid->integral = output - (p_term + d_term);
     }
     else {
         pid->integral = new_integral;
@@ -143,14 +126,9 @@ void pid_set_ts(PID_Controller_t *pid, float ts) {
     pid->ts = ts;
 }
 
-void pid_set_max_out(PID_Controller_t *pid, float max) {
-    if (max <= 0) return;
+void pid_set_out_constraint(PID_Controller_t *pid, float max, float min) {
     pid->out_max = max;
-}
-
-void pid_set_max_out_dynamic(PID_Controller_t *pid, float max) {
-    if (max <= 0) return;
-    pid->out_max_dynamic = max;
+    pid->out_min = min;
 }
 
 void pid_set_deadband(PID_Controller_t *pid, float deadband) {

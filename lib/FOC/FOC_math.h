@@ -42,6 +42,7 @@ void norm_angle_rad(float *theta);
 float fast_sin(float theta);
 float fast_cos(float theta);
 float fast_atan2(float y, float x);
+float fast_sqrt(float x);
 complex_t complex_multiply(complex_t a, complex_t b);
 complex_t complex_add(complex_t a, complex_t b);
 complex_t complex_subtract(complex_t a, complex_t b);

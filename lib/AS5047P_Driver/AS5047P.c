@@ -124,6 +124,7 @@ float AS5047P_get_rpm(AS5047P_t *encd, float Ts) {
     float rpm_instant = (angle_diff * 60.0f) / (Ts * DEGREES_PER_REV);
 
     // Two-stage spike rejection
+#if 0
     float rpm_delta = rpm_instant - encd->prev_rpm;
     float abs_delta = fabsf(rpm_delta);
 
@@ -132,6 +133,7 @@ float AS5047P_get_rpm(AS5047P_t *encd, float Ts) {
         float limited_delta = copysignf(fminf(abs_delta * 0.5f, MAX_RPM_JUMP), rpm_delta);
         rpm_instant = encd->prev_rpm + limited_delta;
     }
+#endif
 
     // IIR Filter with dynamic weighting
     float filtered = encd->filtered_rpm * (1.0f - RPM_FILTER_ALPHA) + rpm_instant * RPM_FILTER_ALPHA;
